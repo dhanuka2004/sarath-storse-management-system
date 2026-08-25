@@ -5,7 +5,7 @@ public class GroceryInventorySystem {
     private static Scanner scanner = new Scanner(System.in);
     
     // Database credentials matching our Docker command
-    private static final String DB_URL = "jdbc:postgresql://localhost:5432/grocery";
+    private static final String DB_URL = "jdbc:postgresql://localhost:5433/grocery";
     private static final String DB_USER = "postgres";
     private static final String DB_PASSWORD = "2004";
 
