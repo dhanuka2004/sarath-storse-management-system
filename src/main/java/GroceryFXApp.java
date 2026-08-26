@@ -200,7 +200,7 @@ public class GroceryFXApp extends Application {
         btnLogout.setStyle("-fx-background-color: #e74c3c; -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8 20;");
 
         btnInventory.setOnAction(e -> showEmployeeInventoryManagement());
-        btnPos.setOnAction(e -> showEmployeePlaceholderScreen("POS System"));
+        btnPos.setOnAction(e -> showEmployeePosSystem());
 
         btnCustomer.setOnAction(e -> showCustomerManagement(false));
         btnSupplier.setOnAction(e -> showSupplierManagement(false));
@@ -605,6 +605,162 @@ public class GroceryFXApp extends Application {
         showPlaceholderScreen(moduleName, false);
     }
 
+    private TableView<CartItem> cartTable;
+    private ObservableList<CartItem> cartDataList = FXCollections.observableArrayList();
+    private Label totalLabel;
+    private double currentTotal = 0.0;
+
+    private void showEmployeePosSystem() {
+        primaryStage.setTitle("Sarath Stores - POS System");
+
+        GridPane formGrid = new GridPane();
+        formGrid.setPadding(new Insets(15));
+        formGrid.setHgap(15);
+        formGrid.setVgap(15);
+
+        TextField idField = new TextField();
+        TextField qtyField = new TextField();
+
+        formGrid.addRow(0, new Label("Item ID:"), idField);
+        formGrid.addRow(1, new Label("Quantity:"), qtyField);
+
+        setupCartTable();
+
+        totalLabel = new Label("Total: $0.00");
+        totalLabel.setStyle("-fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: #27ae60;");
+
+        Button btnAddCart = new Button("Add to Cart");
+        btnAddCart.setStyle("-fx-background-color: #2980b9; -fx-text-fill: white; -fx-font-weight: bold;");
+
+        Button btnRemove = new Button("Remove Selected");
+        Button btnCheckout = new Button("Complete Sale");
+        btnCheckout.setStyle("-fx-background-color: #27ae60; -fx-text-fill: white; -fx-font-weight: bold;");
+
+        Button btnBack = new Button("Back to Menu");
+        btnBack.setStyle("-fx-background-color: #7f8c8d; -fx-text-fill: white;");
+
+        HBox buttonBox = new HBox(12, btnAddCart, btnRemove, btnCheckout, btnBack);
+        buttonBox.setPadding(new Insets(10));
+        buttonBox.setAlignment(Pos.CENTER);
+
+        // Add to Cart Logic with Database Validation
+        btnAddCart.setOnAction(e -> {
+            try {
+                int id = Integer.parseInt(idField.getText().trim());
+                int requestedQty = Integer.parseInt(qtyField.getText().trim());
+
+                if (requestedQty <= 0) {
+                    showAlert("Input Error", "Quantity must be greater than zero.");
+                    return;
+                }
+
+                // Query database for item details & stock validation
+                String sql = "SELECT name, price, quantity FROM items WHERE id = ?";
+                try (Connection conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+                     PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    pstmt.setInt(1, id);
+                    ResultSet rs = pstmt.executeQuery();
+
+                    if (rs.next()) {
+                        String name = rs.getString("name");
+                        double price = rs.getDouble("price");
+                        int availableStock = rs.getInt("quantity");
+
+                        if (requestedQty > availableStock) {
+                            showAlert("Stock Error", "Not enough stock available! Current stock: " + availableStock);
+                            return;
+                        }
+
+                        // Check if item already exists in cart, update quantity if it does
+                        boolean found = false;
+                        for (CartItem item : cartDataList) {
+                            if (item.getId() == id) {
+                                int newQty = item.getQuantity() + requestedQty;
+                                if (newQty > availableStock) {
+                                    showAlert("Stock Error", "Total cart quantity exceeds available stock!");
+                                    return;
+                                }
+                                item.setQuantity(newQty);
+                                item.setSubtotal(newQty * price);
+                                found = true;
+                                cartTable.refresh();
+                                break;
+                            }
+                        }
+
+                        // Otherwise add new row to cart
+                        if (!found) {
+                            cartDataList.add(new CartItem(id, name, price, requestedQty, price * requestedQty));
+                        }
+
+                        calculateCartTotal();
+                        idField.clear();
+                        qtyField.clear();
+                    } else {
+                        showAlert("Not Found", "Item ID does not exist in inventory.");
+                    }
+                }
+            } catch (Exception ex) {
+                showAlert("Input Error", "Please enter valid numbers for ID and Quantity.");
+            }
+        });
+
+        // Remove Selected Item from Cart
+        btnRemove.setOnAction(e -> {
+            CartItem selectedItem = cartTable.getSelectionModel().getSelectedItem();
+            if (selectedItem != null) {
+                cartDataList.remove(selectedItem);
+                calculateCartTotal();
+            } else {
+                showAlert("Selection Error", "Please select an item from the cart to remove.");
+            }
+        });
+
+        // Checkout & Update Database Stock
+        btnCheckout.setOnAction(e -> {
+            if (cartDataList.isEmpty()) {
+                showAlert("Cart Empty", "Add items to the cart before checking out.");
+                return;
+            }
+
+            // Deduct stock in database for each item in cart
+            String updateSql = "UPDATE items SET quantity = quantity - ? WHERE id = ?";
+            try (Connection conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+                 PreparedStatement pstmt = conn.prepareStatement(updateSql)) {
+
+                conn.setAutoCommit(false); // Transaction block
+                try {
+                    for (CartItem item : cartDataList) {
+                        pstmt.setInt(1, item.getQuantity());
+                        pstmt.setInt(2, item.getId());
+                        pstmt.addBatch();
+                    }
+                    pstmt.executeBatch();
+                    conn.commit();
+
+                    showAlert("Success", "Sale completed successfully!\nTotal Paid: $" + String.format("%.2f", currentTotal));
+                    cartDataList.clear();
+                    calculateCartTotal();
+                } catch (SQLException ex) {
+                    conn.rollback();
+                    showAlert("Database Error", "Checkout failed: " + ex.getMessage());
+                }
+            } catch (SQLException ex) {
+                showAlert("Database Error", "Could not connect to database.");
+            }
+        });
+
+        btnBack.setOnAction(e -> showEmployeeHomeDashboard());
+
+        VBox mainLayout = new VBox(15, new Label("EMPLOYEE POS SYSTEM (Checkout)"), formGrid, buttonBox, cartTable, totalLabel);
+        mainLayout.setPadding(new Insets(20));
+        mainLayout.setAlignment(Pos.CENTER_LEFT);
+
+        Scene scene = new Scene(mainLayout, 850, 720);
+        primaryStage.setScene(scene);
+        primaryStage.centerOnScreen();
+    }
+
     private void showPlaceholderScreen(String moduleName, boolean isAdmin) {
         primaryStage.setTitle("Sarath Stores - " + moduleName);
 
@@ -658,6 +814,77 @@ public class GroceryFXApp extends Application {
         inventoryTable.getColumns().clear();
         inventoryTable.getColumns().addAll(idCol, nameCol, qtyCol, priceCol);
         inventoryTable.setItems(inventoryDataList);
+    }
+
+    private void setupCartTable() {
+        cartTable = new TableView<>();
+        cartTable.setPrefHeight(260);
+
+        TableColumn<CartItem, Integer> idCol = new TableColumn<>("ID");
+        idCol.setCellValueFactory(cellData -> cellData.getValue().idProperty().asObject());
+        idCol.setPrefWidth(60);
+
+        TableColumn<CartItem, String> nameCol = new TableColumn<>("Item Name");
+        nameCol.setCellValueFactory(cellData -> cellData.getValue().nameProperty());
+        nameCol.setPrefWidth(220);
+
+        TableColumn<CartItem, Double> priceCol = new TableColumn<>("Price ($)");
+        priceCol.setCellValueFactory(cellData -> cellData.getValue().priceProperty().asObject());
+        priceCol.setPrefWidth(120);
+
+        TableColumn<CartItem, Integer> qtyCol = new TableColumn<>("Quantity");
+        qtyCol.setCellValueFactory(cellData -> cellData.getValue().quantityProperty().asObject());
+        qtyCol.setPrefWidth(100);
+
+        TableColumn<CartItem, Double> subtotalCol = new TableColumn<>("Subtotal ($)");
+        subtotalCol.setCellValueFactory(cellData -> cellData.getValue().subtotalProperty().asObject());
+        subtotalCol.setPrefWidth(140);
+
+        cartTable.getColumns().clear();
+        cartTable.getColumns().addAll(idCol, nameCol, priceCol, qtyCol, subtotalCol);
+        cartTable.setItems(cartDataList);
+    }
+
+    private void calculateCartTotal() {
+        currentTotal = 0.0;
+        for (CartItem item : cartDataList) {
+            currentTotal += item.getSubtotal();
+        }
+        totalLabel.setText(String.format("Total: $%.2f", currentTotal));
+    }
+
+    // CartItem Model Class
+    public static class CartItem {
+        private final SimpleIntegerProperty id;
+        private final SimpleStringProperty name;
+        private final SimpleDoubleProperty price;
+        private final SimpleIntegerProperty quantity;
+        private final SimpleDoubleProperty subtotal;
+
+        public CartItem(int id, String name, double price, int quantity, double subtotal) {
+            this.id = new SimpleIntegerProperty(id);
+            this.name = new SimpleStringProperty(name);
+            this.price = new SimpleDoubleProperty(price);
+            this.quantity = new SimpleIntegerProperty(quantity);
+            this.subtotal = new SimpleDoubleProperty(subtotal);
+        }
+
+        public int getId() { return id.get(); }
+        public SimpleIntegerProperty idProperty() { return id; }
+
+        public String getName() { return name.get(); }
+        public SimpleStringProperty nameProperty() { return name; }
+
+        public double getPrice() { return price.get(); }
+        public SimpleDoubleProperty priceProperty() { return price; }
+
+        public int getQuantity() { return quantity.get(); }
+        public void setQuantity(int quantity) { this.quantity.set(quantity); }
+        public SimpleIntegerProperty quantityProperty() { return quantity; }
+
+        public double getSubtotal() { return subtotal.get(); }
+        public void setSubtotal(double subtotal) { this.subtotal.set(subtotal); }
+        public SimpleDoubleProperty subtotalProperty() { return subtotal; }
     }
 
     private void setupStaffTable() {
